@@ -1,0 +1,346 @@
+# Based on :
+# https://gitlab.com/oprudkyi/openshift-templates
+# https://gitlab.com/gitlab-org/omnibus-gitlab/blob/ux-demo/docker/openshift-ci-template.json
+# http://blog.lwolf.org/post/how-to-easily-deploy-gitlab-on-kubernetes/
+# https://github.com/lwolf/kubernetes-gitlab/tree/master/minio
+#
+# Copyright (c) 2017 Oleksii Prudkyi
+# Copyright (c) 2018 Agustin Henze
+apiVersion: v1
+kind: Template
+labels:
+  template: gitlab-runner-template
+metadata:
+  annotations:
+    description: |
+      GitLab Runner Service.
+      It uses GitLab Runner image from official repository at docker hub.
+      https://hub.docker.com/r/gitlab/gitlab-runner/
+
+    openshift.io/display-name: GitLab Runner Service
+    tags: gitlab-runner
+  creationTimestamp: null
+  name: gitlab-runner
+objects:
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: sa-${GITLAB_RUNNER_SERVICE_NAME}
+- apiVersion: v1
+  kind: RoleBinding
+  metadata:
+    name: sa-${GITLAB_RUNNER_SERVICE_NAME}
+  groupNames: null
+  subjects:
+    - kind: ServiceAccount
+      name: sa-${GITLAB_RUNNER_SERVICE_NAME}
+  roleRef:
+    name: edit
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    creationTimestamp: null
+    labels:
+      app: ${GITLAB_RUNNER_SERVICE_NAME}
+    name: is-${GITLAB_RUNNER_SERVICE_NAME}
+  spec:
+    dockerImageRepository: ""
+    tags:
+      -
+       from:
+         kind: DockerImage
+         name: gitlab/gitlab-runner:${GITLAB_RUNNER_IMAGE_DOCKER_TAG}
+       name: gitlab_runner_pseudo_tag
+       importPolicy:
+         scheduled: true
+  status:
+    dockerImageRepository: ""
+- apiVersion: v1
+  kind: Service
+  metadata:
+    creationTimestamp: null
+    name: ${GITLAB_RUNNER_SERVICE_NAME}
+  spec:
+    portalIP: ""
+    ports:
+    - name: 22-ssh
+      nodePort: 0
+      port: 22
+      protocol: TCP
+      targetPort: 22
+    selector:
+      name: ${GITLAB_RUNNER_SERVICE_NAME}
+    sessionAffinity: None
+    type: ClusterIP
+  status:
+    loadBalancer: {}
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    creationTimestamp: null
+    name: dc-${GITLAB_RUNNER_SERVICE_NAME}
+  spec:
+    replicas: 1
+    selector:
+      name: ${GITLAB_RUNNER_SERVICE_NAME}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        creationTimestamp: null
+        labels:
+          name: ${GITLAB_RUNNER_SERVICE_NAME}
+      spec:
+        containers:
+        - capabilities: {}
+          image: ' '
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            exec:
+              command:
+              - /usr/bin/pgrep
+              - gitlab-runner
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          livenessProbe:
+            exec:
+              command:
+              - /usr/bin/pgrep
+              - gitlab-runner
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          name: cnt-${GITLAB_RUNNER_SERVICE_NAME}
+          ports:
+          - containerPort: 22
+            protocol: TCP
+          args:
+              - run
+              -  --working-directory
+              - ${GITLAB_RUNNER_WORKDIR}
+              -  --config
+              - /etc/gitlab-runner/config.toml
+              - --service
+              - gitlab-runner
+              - --user
+              - gitlab-runner
+          resources:
+            limits:
+              memory: ${MEMORY_LIMIT}
+          securityContext:
+            capabilities: {}
+            privileged: false
+          terminationMessagePath: /dev/termination-log
+          volumeMounts:
+          - mountPath: /etc/gitlab-runner
+            name: vol-${GITLAB_RUNNER_SERVICE_NAME}-config
+          - mountPath: /etc/redhat-ca
+            name: vol-${GITLAB_RUNNER_SERVICE_NAME}-redhat-ca
+        serviceAccountName: sa-${GITLAB_RUNNER_SERVICE_NAME}
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        volumes:
+        - configMap:
+            name: cm-${GITLAB_RUNNER_SERVICE_NAME}
+          name: vol-${GITLAB_RUNNER_SERVICE_NAME}-config
+        - configMap:
+            name: redhat-ca-${GITLAB_RUNNER_SERVICE_NAME}
+          name: vol-${GITLAB_RUNNER_SERVICE_NAME}-redhat-ca
+    triggers:
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - cnt-${GITLAB_RUNNER_SERVICE_NAME}
+        from:
+          kind: ImageStreamTag
+          name: is-${GITLAB_RUNNER_SERVICE_NAME}:gitlab_runner_pseudo_tag
+        lastTriggeredImage: ""
+      type: ImageChange
+    - type: ConfigChange
+  status: {}
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: cm-${GITLAB_RUNNER_SERVICE_NAME}
+  data:
+    config.toml: |
+      concurrent = ${GITLAB_RUNNER_JOBS}
+      check_interval = 0
+
+      [[runners]]
+        name = "GitLab Runner"
+        url = "${GITLAB_RUNNER_CI_URL}"
+        token = "${GITLAB_RUNNER_TOKEN}"
+        executor = "kubernetes"
+        tls-ca-file = "/etc/redhat-ca/RedHatITRootCA.crt"
+        cache_dir = '${GITLAB_RUNNER_WORKDIR}/cache'
+        environment = ["HOME=${GITLAB_RUNNER_WORKDIR}"]
+        # See https://docs.gitlab.com/runner/executors/kubernetes.html
+        [runners.kubernetes]
+          namespace = "${GITLAB_RUNNER_NAMESPACE}"
+          privileged = false
+          host = ""
+          cert_file = ""
+          key_file = ""
+          ca_file = ""
+          image = ""
+          cpu_request = "${GITLAB_BUILD_CPU_REQUEST}"
+          cpu_limit = "${GITLAB_BUILD_CPU_LIMIT}"
+          memory_request = "${GITLAB_BUILD_MEMORY_REQUEST}"
+          memory_limit = "${GITLAB_BUILD_MEMORY_LIMIT}"
+          service_cpu_request = "${GITLAB_SERVICE_CPU_REQUEST}"
+          service_cpu_limit = "${GITLAB_SERVICE_CPU_LIMIT}"
+          service_memory_request = "${GITLAB_SERVICE_MEMORY_REQUEST}"
+          service_memory_limit = "${GITLAB_SERVICE_MEMORY_LIMIT}"
+          helper_cpu_request = "${GITLAB_HELPER_CPU_REQUEST}"
+          helper_cpu_limit = "${GITLAB_HELPER_CPU_LIMIT}"
+          helper_memory_request = "${GITLAB_HELPER_MEMORY_REQUEST}"
+          helper_memory_limit = "${GITLAB_HELPER_MEMORY_LIMIT}"
+          helper_image = ""
+        [runners.cache]
+          Type = "s3"
+          Shared = true
+          [runners.cache.s3]
+            ServerAddress = "${MINIO_SERVICE_NAME}:${MINIO_SERVICE_PORT}"
+            AccessKey = "${MINIO_ACCESS_KEY}"
+            SecretKey = "${MINIO_SECRET_KEY}"
+            BucketName = "${MINIO_BUCKET_NAME}"
+            Insecure = true
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: redhat-ca-${GITLAB_RUNNER_SERVICE_NAME}
+  data:
+    RedHatITRootCA.crt: |
+      -----BEGIN CERTIFICATE-----
+      MIIENDCCAxygAwIBAgIJANunI0D662cnMA0GCSqGSIb3DQEBCwUAMIGlMQswCQYD
+      VQQGEwJVUzEXMBUGA1UECAwOTm9ydGggQ2Fyb2xpbmExEDAOBgNVBAcMB1JhbGVp
+      Z2gxFjAUBgNVBAoMDVJlZCBIYXQsIEluYy4xEzARBgNVBAsMClJlZCBIYXQgSVQx
+      GzAZBgNVBAMMElJlZCBIYXQgSVQgUm9vdCBDQTEhMB8GCSqGSIb3DQEJARYSaW5m
+      b3NlY0ByZWRoYXQuY29tMCAXDTE1MDcwNjE3MzgxMVoYDzIwNTUwNjI2MTczODEx
+      WjCBpTELMAkGA1UEBhMCVVMxFzAVBgNVBAgMDk5vcnRoIENhcm9saW5hMRAwDgYD
+      VQQHDAdSYWxlaWdoMRYwFAYDVQQKDA1SZWQgSGF0LCBJbmMuMRMwEQYDVQQLDApS
+      ZWQgSGF0IElUMRswGQYDVQQDDBJSZWQgSGF0IElUIFJvb3QgQ0ExITAfBgkqhkiG
+      9w0BCQEWEmluZm9zZWNAcmVkaGF0LmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEP
+      ADCCAQoCggEBALQt9OJQh6GC5LT1g80qNh0u50BQ4sZ/yZ8aETxt+5lnPVX6MHKz
+      bfwI6nO1aMG6j9bSw+6UUyPBHP796+FT/pTS+K0wsDV7c9XvHoxJBJJU38cdLkI2
+      c/i7lDqTfTcfLL2nyUBd2fQDk1B0fxrskhGIIZ3ifP1Ps4ltTkv8hRSob3VtNqSo
+      GxkKfvD2PKjTPxDPWYyruy9irLZioMffi3i/gCut0ZWtAyO3MVH5qWF/enKwgPES
+      X9po+TdCvRB/RUObBaM761EcrLSM1GqHNueSfqnho3AjLQ6dBnPWlo638Zm1VebK
+      BELyhkLWMSFkKwDmne0jQ02Y4g075vCKvCsCAwEAAaNjMGEwHQYDVR0OBBYEFH7R
+      4yC+UehIIPeuL8Zqw3PzbgcZMB8GA1UdIwQYMBaAFH7R4yC+UehIIPeuL8Zqw3Pz
+      bgcZMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMA0GCSqGSIb3DQEB
+      CwUAA4IBAQBDNvD2Vm9sA5A9AlOJR8+en5Xz9hXcxJB5phxcZQ8jFoG04Vshvd0e
+      LEnUrMcfFgIZ4njMKTQCM4ZFUPAieyLx4f52HuDopp3e5JyIMfW+KFcNIpKwCsak
+      oSoKtIUOsUJK7qBVZxcrIyeQV2qcYOeZhtS5wBqIwOAhFwlCET7Ze58QHmS48slj
+      S9K0JAcps2xdnGu0fkzhSQxY8GPQNFTlr6rYld5+ID/hHeS76gq0YG3q6RLWRkHf
+      4eTkRjivAlExrFzKcljC4axKQlnOvVAzz+Gm32U0xPBF4ByePVxCJUHw1TsyTmel
+      RxNEp7yHoXcwn+fXna+t5JWh1gxUZty3
+      -----END CERTIFICATE-----
+
+parameters:
+- description: The GitLab CI coordinator URL (e.g. https://gitlab.com/).
+  displayName: GitLab CI URL
+  name: GITLAB_RUNNER_CI_URL
+  required: true
+
+- description: The runner token, it's not the one from Runners page. Please run 'gitlab-runner register' locally and then get real token from /etc/gitlab-runner/config.toml.
+  displayName: GitLab Runner Token (It is not the one from Runners page, but the one from config.toml)
+  name: GITLAB_RUNNER_TOKEN
+  required: true
+
+- description: "The namespace/project where actual runners will run (requires correct scc/role config). Use current project name if unsure. "
+  displayName: GitLab Runners Namespace
+  name: GITLAB_RUNNER_NAMESPACE
+  required: true
+
+- description: The count of jobs can be run concurrently.
+  displayName: GitLab Runner jobs
+  name: GITLAB_RUNNER_JOBS
+  required: true
+  value: "5"
+
+- description: The workdir where gitlab runner and pods launched by the runner have write permission.
+  displayName: GitLab Runner jobs
+  name: GITLAB_RUNNER_WORKDIR
+  required: true
+  value: "/tmp"
+
+- description: Maximum amount of memory the container can use.
+  displayName: Memory Limit
+  name: MEMORY_LIMIT
+  value: 512Mi
+
+- description: The name of the OpenShift Service exposed for the GitLab Runner.
+  displayName: GitLab Runner Service Name
+  name: GITLAB_RUNNER_SERVICE_NAME
+  required: true
+  value: gitlab-runner-service
+
+- description: Tag of GitLab Runner image (alpine or latest). Check https://hub.docker.com/r/gitlab/gitlab-runner/tags/ for list of supported values
+  displayName: GitLab Runner Image Tag at Docker Hub
+  name: GITLAB_RUNNER_IMAGE_DOCKER_TAG
+  value: "alpine"
+
+- name: GITLAB_BUILD_CPU_REQUEST
+  displayName: Gitlab cpu request for the build container
+
+- name: GITLAB_BUILD_CPU_LIMIT
+  displayName: Gitlab cpu limit for the build container
+
+- name: GITLAB_BUILD_MEMORY_REQUEST
+  displayName: Gitlab memory request for the build container
+
+- name: GITLAB_BUILD_MEMORY_LIMIT
+  displayName: Gitlab memory limit for the build container
+
+- name: GITLAB_SERVICE_CPU_REQUEST
+  displayName: Gitlab cpu request for the service container
+
+- name: GITLAB_SERVICE_CPU_LIMIT
+  displayName: Gitlab cpu limit for the service container
+
+- name: GITLAB_SERVICE_MEMORY_REQUEST
+  displayName: Gitlab memory request for the service container
+
+- name: GITLAB_SERVICE_MEMORY_LIMIT
+  displayName: Gitlab memory limit for the service container
+
+- name: GITLAB_HELPER_CPU_REQUEST
+  displayName: Gitlab cpu request for the helper container
+
+- name: GITLAB_HELPER_CPU_LIMIT
+  displayName: Gitlab cpu limit for the helper container
+
+- name: GITLAB_HELPER_MEMORY_REQUEST
+  displayName: Gitlab memory request for the helper container
+
+- name: GITLAB_HELPER_MEMORY_LIMIT
+  displayName: Gitlab memory limit for the helper container
+
+- description: Custom username or access key of 5 to 20 characters in length.
+  displayName: Minio Cloud Storage Access Key
+  name: MINIO_ACCESS_KEY
+  required: true
+
+- description: Custom password or secret key of 8 to 40 characters in length.
+  displayName: Minio Cloud Storage Secret Key
+  name: MINIO_SECRET_KEY
+  required: true
+
+- description: The name of the OpenShift Service exposed for the Minio Cloud Storage.
+  displayName: Minio Cloud Storage Service Name
+  name: MINIO_SERVICE_NAME
+  required: true
+  value: minio-service
+
+- description: The name of the bucket used by gitlab on the Minio Cloud Storage.
+  displayName: Minio Cloud Storage Bucket Name
+  name: MINIO_BUCKET_NAME
+  required: true
+  value: "bkt-gitlab-runner"
+
+- description: The port of the OpenShift Service exposed for the Minio Cloud Storage.
+  displayName: Minio Cloud Storage Service Port
+  name: MINIO_SERVICE_PORT
+  required: true
+  value: "80"
